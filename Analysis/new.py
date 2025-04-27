@@ -43,7 +43,8 @@ def extract_avg_skin_color(img):
     return avg_rgb
 
 # --- Step 3: Main Processing ---
-dataset_path = '/path/to/Dataset'  # <-- Replace this path
+dataset_path = "../Dataset"
+
 images, filenames = load_images_from_folder(dataset_path)
 
 avg_colors = []
