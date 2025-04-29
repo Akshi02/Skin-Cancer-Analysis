@@ -1,205 +1,84 @@
-# === Full Pipeline: Skin RGB Analysis + Fitzpatrick Mapping ===
-
 import os
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-import random
 import shutil
-import pandas as pd
-from sklearn.cluster import KMeans
-import numpy as np
+from tqdm import tqdm
 
-# --- Step 1: Load images ---
-def load_images_from_folder(folder_path):
-    images = []
-    filenames = []
-    for root, dirs, files in os.walk(folder_path):
-        for file in files:
-            if file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                img_path = os.path.join(root, file)
-                img = cv2.imread(img_path)
-                if img is not None:
-                    images.append(img)
-                    filenames.append(img_path)
-    return images, filenames
+# === Von Luschan reference RGB values ===
+von_luschan_rgb = [
+    (1,  (244, 242, 245)), (2,  (236, 235, 233)), (3,  (250, 249, 247)), (4,  (253, 251, 230)),
+    (5,  (253, 246, 230)), (6,  (254, 247, 229)), (7,  (250, 240, 239)), (8,  (243, 234, 229)),
+    (9,  (244, 241, 234)), (10, (251, 252, 244)), (11, (252, 248, 237)), (12, (254, 246, 225)),
+    (13, (255, 249, 225)), (14, (255, 249, 225)), (15, (241, 231, 195)), (16, (239, 226, 173)),
+    (17, (224, 210, 147)), (18, (242, 226, 151)), (19, (235, 214, 159)), (20, (235, 217, 133)),
+    (21, (227, 196, 103)), (22, (225, 193, 106)), (23, (223, 193, 123)), (24, (222, 184, 119)),
+    (25, (199, 164, 100)), (26, (188, 151,  98)), (27, (156, 107,  67)), (28, (142,  88,  62)),
+    (29, (121,  77,  48)), (30, (100,  49,  22)), (31, (101,  48,  32)), (32, ( 96,  49,  33)),
+    (33, ( 87,  50,  41)), (34, ( 64,  32,  21)), (35, ( 49,  37,  44)), (36, ( 27,  28,  44)),
+]
 
-# --- Step 2: Extract average skin color (ignore dark moles) ---
+def rgb_to_von_luschan(rgb_val):
+    distances = [np.linalg.norm(np.array(rgb_val) - np.array(rgb)) for _, rgb in von_luschan_rgb]
+    return von_luschan_rgb[np.argmin(distances)][0]
+
+def von_luschan_to_fitzpatrick(index):
+    if index <= 6:
+        return "Type I (FST1)"
+    elif index <= 13:
+        return "Type II (FST2)"
+    elif index <= 20:
+        return "Type III (FST3)"
+    elif index <= 27:
+        return "Type IV (FST4)"
+    elif index <= 34:
+        return "Type V (FST5)"
+    else:
+        return "Type VI (FST6)"
+
 def extract_avg_skin_color(img):
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     blurred = cv2.GaussianBlur(img_rgb, (15, 15), 0)
-
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
     _, mask = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
-
     masked_rgb = cv2.bitwise_and(blurred, blurred, mask=mask)
     non_zero_pixels = masked_rgb[mask != 0]
-
     if len(non_zero_pixels) == 0:
-        return np.array([0, 0, 0])
+        return None
     avg_rgb = np.mean(non_zero_pixels, axis=0)
     return avg_rgb
 
-# --- Step 3: Map RGB centers to Fitzpatrick Skin Types ---
-def map_rgb_to_fitzpatrick(center_rgb):
-    brightness = np.mean(center_rgb)
-    if brightness >= 220:
-        return "Type I (FST1): Very fair skin"
-    elif brightness >= 190:
-        return "Type II (FST2): Fair skin"
-    elif brightness >= 160:
-        return "Type III (FST3): Medium skin tone"
-    elif brightness >= 130:
-        return "Type IV (FST4): Olive skin tone"
-    elif brightness >= 100:
-        return "Type V (FST5): Brown skin"
-    else:
-        return "Type VI (FST6): Dark brown or black skin"
+# === Main Pipeline ===
 
-# --- Main Pipeline ---
+# Input dataset directory (change this if needed)
+dataset_path = "../Dataset"  # relative to your script
 
-# Set your dataset path
-dataset_path = "../Dataset"  # Adjust this if needed
+# Output directory
+output_dir = "Clustered_Dataset"
+os.makedirs(output_dir, exist_ok=True)
 
-# Load images
-images, filenames = load_images_from_folder(dataset_path)
-print(f"Loaded {len(images)} images.")
+# Supported extensions
+exts = (".jpg", ".jpeg", ".png")
 
-# Extract average skin colors
-avg_colors = []
-for img in images:
-    avg_rgb = extract_avg_skin_color(img)
-    avg_colors.append(avg_rgb)
+# Process all images
+for root, _, files in os.walk(dataset_path):
+    for fname in tqdm(files):
+        if not fname.lower().endswith(exts):
+            continue
+        img_path = os.path.join(root, fname)
+        img = cv2.imread(img_path)
+        if img is None:
+            continue
 
-avg_colors = np.array(avg_colors)
+        avg_rgb = extract_avg_skin_color(img)
+        if avg_rgb is None:
+            continue
 
-# Remove empty entries (bad images)
-non_empty_indices = [i for i, color in enumerate(avg_colors) if not np.all(color == 0)]
-avg_colors = avg_colors[non_empty_indices]
-filenames = [filenames[i] for i in non_empty_indices]
+        luschan_index = rgb_to_von_luschan(avg_rgb)
+        fitz_label = von_luschan_to_fitzpatrick(luschan_index)
 
-print(f"Extracted average skin colors for {len(avg_colors)} images.")
+        save_dir = os.path.join(output_dir, fitz_label)
+        os.makedirs(save_dir, exist_ok=True)
 
-# Cluster the skin tones
-num_clusters = 6  # For FST1-FST6
-kmeans = KMeans(n_clusters=num_clusters, random_state=42)
-labels = kmeans.fit_predict(avg_colors)
-cluster_centers = kmeans.cluster_centers_
+        shutil.copy2(img_path, os.path.join(save_dir, fname))
 
-# Map cluster centers to Fitzpatrick types
-fitzpatrick_labels = [map_rgb_to_fitzpatrick(center) for center in cluster_centers]
-
-print("\nCluster mapping to Fitzpatrick Types:")
-for idx, label in enumerate(fitzpatrick_labels):
-    print(f"Cluster {idx}: {label}")
-
-# Save clustering results
-df = pd.DataFrame({
-    'filename': filenames,
-    'cluster_label': labels
-})
-df.to_csv('skin_tone_clusters.csv', index=False)
-print("\nSaved clustering results to 'skin_tone_clusters.csv'.")
-
-# --- Plot random sample images per cluster ---
-num_samples_per_cluster = 5
-
-for cluster_idx in range(len(cluster_centers)):
-    cluster_name = fitzpatrick_labels[cluster_idx]
-    cluster_image_indices = np.where(labels == cluster_idx)[0]
-    
-    if len(cluster_image_indices) == 0:
-        continue
-
-    selected_indices = random.sample(list(cluster_image_indices), min(num_samples_per_cluster, len(cluster_image_indices)))
-
-    plt.figure(figsize=(15, 5))
-    plt.suptitle(f"{cluster_name} (Cluster {cluster_idx})", fontsize=16)
-
-    for i, idx in enumerate(selected_indices):
-        img = cv2.imread(filenames[idx])
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-        plt.subplot(1, num_samples_per_cluster, i + 1)
-        plt.imshow(img_rgb)
-        plt.axis('off')
-        plt.title(os.path.basename(filenames[idx]))
-
-    plt.show()
-
-# --- Group images into folders ---
-output_base = "Grouped_Images"
-os.makedirs(output_base, exist_ok=True)
-
-for idx, file_path in enumerate(filenames):
-    label = labels[idx]
-    fitz_name = fitzpatrick_labels[label]
-
-    if "benign" in file_path.lower():
-        category = "benign"
-    elif "malignant" in file_path.lower():
-        category = "malignant"
-    else:
-        category = "unknown"
-
-    output_folder = os.path.join(output_base, fitz_name, category)
-    os.makedirs(output_folder, exist_ok=True)
-
-    filename_only = os.path.basename(file_path)
-    output_path = os.path.join(output_folder, filename_only)
-    shutil.copy2(file_path, output_path)
-
-print(f"\nImages successfully grouped into '{output_base}/' based on Fitzpatrick types and categories.")
-
-# --- Plot SCIN true vs predicted Fitzpatrick distributions ---
-
-# Load SCIN true Fitzpatrick data
-real_data = pd.read_csv('/mnt/data/scin_cases.csv')
-real_skin_types = real_data['fitzpatrick_skin_type'].dropna()
-true_counts = real_skin_types.value_counts()
-
-# Predicted distribution
-predicted_fitz_names = [fitzpatrick_labels[label] for label in labels]
-pred_counts = pd.Series(predicted_fitz_names).value_counts()
-
-# Align categories
-fitz_order = [
-    "Type I (FST1): Very fair skin",
-    "Type II (FST2): Fair skin",
-    "Type III (FST3): Medium skin tone",
-    "Type IV (FST4): Olive skin tone",
-    "Type V (FST5): Brown skin",
-    "Type VI (FST6): Dark brown or black skin"
-]
-
-true_counts = true_counts.reindex(fitz_order, fill_value=0)
-pred_counts = pred_counts.reindex(fitz_order, fill_value=0)
-
-# Plot side-by-side bar chart
-x = np.arange(len(fitz_order))
-width = 0.35
-
-fig, ax = plt.subplots(figsize=(12,6))
-rects1 = ax.bar(x - width/2, true_counts.values, width, label='True (SCIN Dataset)')
-rects2 = ax.bar(x + width/2, pred_counts.values, width, label='Predicted (Clustered Images)')
-
-ax.set_ylabel('Number of Samples')
-ax.set_title('Fitzpatrick Skin Type Distribution Comparison')
-ax.set_xticks(x)
-ax.set_xticklabels(fitz_order, rotation=45, ha='right')
-ax.legend()
-
-def annotate_bars(rects):
-    for rect in rects:
-        height = rect.get_height()
-        ax.annotate(f'{int(height)}',
-                    xy=(rect.get_x() + rect.get_width()/2, height),
-                    xytext=(0, 3),
-                    textcoords="offset points",
-                    ha='center', va='bottom')
-
-annotate_bars(rects1)
-annotate_bars(rects2)
-
-plt.tight_layout()
-plt.show()
+print(f"\n✅ Images grouped by Fitzpatrick skin type into '{output_dir}'")
